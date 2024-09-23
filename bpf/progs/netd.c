@@ -127,11 +127,6 @@ DEFINE_BPF_MAP_RO_NETD(data_saver_enabled_map, ARRAY, uint32_t, bool,
 #define DEFINE_NETD_BPF_PROG(SECTION_NAME, prog_uid, prog_gid, the_prog) \
     DEFINE_NETD_BPF_PROG_KVER(SECTION_NAME, prog_uid, prog_gid, the_prog, KVER_NONE)
 
-#define DEFINE_NETD_V_BPF_PROG_KVER(SECTION_NAME, prog_uid, prog_gid, the_prog, minKV)            \
-    DEFINE_BPF_PROG_EXT(SECTION_NAME, prog_uid, prog_gid, the_prog, minKV,                        \
-                        KVER_INF, BPFLOADER_MAINLINE_V_VERSION, BPFLOADER_MAX_VER, MANDATORY,     \
-                        "fs_bpf_netd_readonly", "", LOAD_ON_ENG, LOAD_ON_USER, LOAD_ON_USERDEBUG)
-
 // programs that only need to be usable by the system server
 #define DEFINE_SYS_BPF_PROG(SECTION_NAME, prog_uid, prog_gid, the_prog) \
     DEFINE_BPF_PROG_EXT(SECTION_NAME, prog_uid, prog_gid, the_prog, KVER_NONE, KVER_INF,  \
@@ -639,120 +634,10 @@ static __always_inline inline uint8_t get_app_permissions() {
     return permissions ? *permissions : BPF_PERMISSION_INTERNET;
 }
 
-DEFINE_NETD_BPF_PROG_KVER("cgroupsock/inet_create", AID_ROOT, AID_ROOT, inet_socket_create,
+DEFINE_NETD_BPF_PROG_KVER("cgroupsock/inet/create", AID_ROOT, AID_ROOT, inet_socket_create,
                           KVER_4_14)
 (__unused struct bpf_sock* sk) {
     return (get_app_permissions() & BPF_PERMISSION_INTERNET) ? BPF_ALLOW : BPF_DISALLOW;
-}
-
-DEFINE_NETD_BPF_PROG_KVER("cgroupsockrelease/inet_release", AID_ROOT, AID_ROOT,
-                          inet_socket_release, KVER_5_10)
-(struct bpf_sock* sk) {
-    uint64_t cookie = bpf_get_sk_cookie(sk);
-    if (cookie) bpf_cookie_tag_map_delete_elem(&cookie);
-
-    return 1;
-}
-
-static __always_inline inline int check_localhost(__unused struct bpf_sock_addr *ctx) {
-    // See include/uapi/linux/bpf.h:
-    //
-    // struct bpf_sock_addr {
-    //   __u32 user_family;	//     R: 4 byte
-    //   __u32 user_ip4;	// BE, R: 1,2,4-byte,   W: 4-byte
-    //   __u32 user_ip6[4];	// BE, R: 1,2,4,8-byte, W: 4,8-byte
-    //   __u32 user_port;	// BE, R: 1,2,4-byte,   W: 4-byte
-    //   __u32 family;		//     R: 4 byte
-    //   __u32 type;		//     R: 4 byte
-    //   __u32 protocol;	//     R: 4 byte
-    //   __u32 msg_src_ip4;	// BE, R: 1,2,4-byte,   W: 4-byte
-    //   __u32 msg_src_ip6[4];	// BE, R: 1,2,4,8-byte, W: 4,8-byte
-    //   __bpf_md_ptr(struct bpf_sock *, sk);
-    // };
-    return BPF_ALLOW;
-}
-
-static inline __always_inline int block_port(struct bpf_sock_addr *ctx) {
-    if (!ctx->user_port) return BPF_ALLOW;
-
-    switch (ctx->protocol) {
-        case IPPROTO_TCP:
-        case IPPROTO_MPTCP:
-        case IPPROTO_UDP:
-        case IPPROTO_UDPLITE:
-        case IPPROTO_DCCP:
-        case IPPROTO_SCTP:
-            break;
-        default:
-            return BPF_ALLOW; // unknown protocols are allowed
-    }
-
-    int key = ctx->user_port >> 6;
-    int shift = ctx->user_port & 63;
-
-    uint64_t *val = bpf_blocked_ports_map_lookup_elem(&key);
-    // Lookup should never fail in reality, but if it does return here to keep the
-    // BPF verifier happy.
-    if (!val) return BPF_ALLOW;
-
-    if ((*val >> shift) & 1) return BPF_DISALLOW;
-    return BPF_ALLOW;
-}
-
-DEFINE_NETD_BPF_PROG_KVER("bind4/inet4_bind", AID_ROOT, AID_ROOT, inet4_bind, KVER_4_19)
-(struct bpf_sock_addr *ctx) {
-    return block_port(ctx);
-}
-
-DEFINE_NETD_BPF_PROG_KVER("bind6/inet6_bind", AID_ROOT, AID_ROOT, inet6_bind, KVER_4_19)
-(struct bpf_sock_addr *ctx) {
-    return block_port(ctx);
-}
-
-DEFINE_NETD_V_BPF_PROG_KVER("connect4/inet4_connect", AID_ROOT, AID_ROOT, inet4_connect, KVER_4_14)
-(struct bpf_sock_addr *ctx) {
-    return check_localhost(ctx);
-}
-
-DEFINE_NETD_V_BPF_PROG_KVER("connect6/inet6_connect", AID_ROOT, AID_ROOT, inet6_connect, KVER_4_14)
-(struct bpf_sock_addr *ctx) {
-    return check_localhost(ctx);
-}
-
-DEFINE_NETD_V_BPF_PROG_KVER("recvmsg4/udp4_recvmsg", AID_ROOT, AID_ROOT, udp4_recvmsg, KVER_4_14)
-(struct bpf_sock_addr *ctx) {
-    return check_localhost(ctx);
-}
-
-DEFINE_NETD_V_BPF_PROG_KVER("recvmsg6/udp6_recvmsg", AID_ROOT, AID_ROOT, udp6_recvmsg, KVER_4_14)
-(struct bpf_sock_addr *ctx) {
-    return check_localhost(ctx);
-}
-
-DEFINE_NETD_V_BPF_PROG_KVER("sendmsg4/udp4_sendmsg", AID_ROOT, AID_ROOT, udp4_sendmsg, KVER_4_14)
-(struct bpf_sock_addr *ctx) {
-    return check_localhost(ctx);
-}
-
-DEFINE_NETD_V_BPF_PROG_KVER("sendmsg6/udp6_sendmsg", AID_ROOT, AID_ROOT, udp6_sendmsg, KVER_4_14)
-(struct bpf_sock_addr *ctx) {
-    return check_localhost(ctx);
-}
-
-DEFINE_NETD_V_BPF_PROG_KVER("getsockopt/prog", AID_ROOT, AID_ROOT, getsockopt_prog, KVER_5_4)
-(struct bpf_sockopt *ctx) {
-    // Tell kernel to return 'original' kernel reply (instead of the bpf modified buffer)
-    // This is important if the answer is larger than PAGE_SIZE (max size this bpf hook can provide)
-    ctx->optlen = 0;
-    return BPF_ALLOW;
-}
-
-DEFINE_NETD_V_BPF_PROG_KVER("setsockopt/prog", AID_ROOT, AID_ROOT, setsockopt_prog, KVER_5_4)
-(struct bpf_sockopt *ctx) {
-    // Tell kernel to use/process original buffer provided by userspace.
-    // This is important if it is larger than PAGE_SIZE (max size this bpf hook can handle).
-    ctx->optlen = 0;
-    return BPF_ALLOW;
 }
 
 LICENSE("Apache 2.0");
